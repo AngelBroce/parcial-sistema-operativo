@@ -1,0 +1,15 @@
+{
+  // Usa el intérprete de .venv configurado en settings.json
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug app.py (.venv)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/app.py",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": true
+    }
+  ]
+}

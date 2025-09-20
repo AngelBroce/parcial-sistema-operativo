@@ -1,0 +1,6 @@
+{
+  // Usar siempre el intérprete local del workspace
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  // Activar el entorno automáticamente en la terminal integrada
+  "python.terminal.activateEnvironment": true
+}
