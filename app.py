@@ -116,9 +116,9 @@ def generar_linger_zombi_variado() -> int:
 # ===============================
 
 ESTADOS = (
-    "Nuevo",
     "Listo",
-    "Ejecución",
+    "Ejecución", 
+    "Bloqueado",
     "Zombi",
     "Finalizado",
 )
@@ -290,6 +290,9 @@ class TaskManagerApp(tk.Tk):
         self.pids_especiales = []  # Guardaremos 3 PIDs aleatorios aquí
         self.finalizados_pendientes_zombi = {}  # PID -> tiempo_finalizacion para conversión a zombi
 
+        # Contador persistente de procesos finalizados (no se reinicia al eliminar)
+        self.total_finalizados_historico = 0
+
         # Variables para creación automática de procesos
         self.auto_process_counter = 0
         self.max_auto_processes = 3
@@ -389,10 +392,8 @@ class TaskManagerApp(tk.Tk):
         # Acciones manuales
         grp_acc = ttk.LabelFrame(right, text="Acciones manuales")
         grp_acc.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        ttk.Button(grp_acc, text="Forzar Ejecución", command=self._forzar_ejec_sel).grid(row=0, column=0, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Finalizar", command=self._finalizar_sel).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Crear Zombi", command=self._crear_zombi).grid(row=0, column=2, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Kill Zombi", command=self._kill_zombi).grid(row=1, column=0, padx=4, pady=4)
+        ttk.Button(grp_acc, text="Kill Tarea", command=self._finalizar_sel).grid(row=0, column=0, padx=4, pady=4)
+        ttk.Button(grp_acc, text="Kill Zombi", command=self._kill_zombi).grid(row=0, column=1, padx=4, pady=4)
 
         # Leyenda de colores de estados
         grp_leg = ttk.LabelFrame(right, text="Leyenda de estados")
@@ -436,12 +437,12 @@ class TaskManagerApp(tk.Tk):
         return sel
 
     def _actualizar_pids_especiales(self):
-        """Actualiza la lista de PIDs especiales dinámicamente: 1 por cada grupo de 6 procesos"""
+        """Actualiza la lista de PIDs especiales dinámicamente: 1 por cada grupo de 9 procesos (menos zombis)"""
         total_procesos = len(self.procesos)
-        # Calcular cuántos PIDs especiales necesitamos: 1 por cada 6 procesos (redondeando hacia arriba)
-        zombis_objetivo = (total_procesos + 5) // 6  # Equivale a math.ceil(total_procesos / 6)
+        # Calcular cuántos PIDs especiales necesitamos: 1 por cada 9 procesos (redondeando hacia arriba)
+        zombis_objetivo = (total_procesos + 8) // 9  # Equivale a math.ceil(total_procesos / 9)
         
-        self._log(f"📊 ACTUALIZACIÓN PIDs: Total={total_procesos}, Objetivo zombis={zombis_objetivo} (cada 6), Actuales={len(self.pids_especiales)} {self.pids_especiales}")
+        self._log(f"📊 ACTUALIZACIÓN PIDs: Total={total_procesos}, Objetivo zombis={zombis_objetivo} (cada 9), Actuales={len(self.pids_especiales)} {self.pids_especiales}")
         
         # Si necesitamos más PIDs especiales (se agregaron procesos)
         if len(self.pids_especiales) < zombis_objetivo:
@@ -455,9 +456,9 @@ class TaskManagerApp(tk.Tk):
                 self.pids_especiales.append(nuevo_especial)
                 candidatos.remove(nuevo_especial)
                 
-                # Calcular en qué "grupo de 6" estamos
-                grupo_actual = (len(self.pids_especiales) - 1) * 6 + 1
-                grupo_hasta = len(self.pids_especiales) * 6
+                # Calcular en qué "grupo de 9" estamos
+                grupo_actual = (len(self.pids_especiales) - 1) * 9 + 1
+                grupo_hasta = len(self.pids_especiales) * 9
                 self._log(f"🎯 PID {nuevo_especial} seleccionado para zombi #{len(self.pids_especiales)} (procesos {grupo_actual}-{grupo_hasta})")
         
         # Si tenemos demasiados PIDs especiales (por eliminación de procesos)
@@ -483,6 +484,9 @@ class TaskManagerApp(tk.Tk):
         proceso.tiempo_estado = 0
         proceso.tiempo_finalizado = time.time()
         
+        # Incrementar contador persistente de finalizados
+        self.total_finalizados_historico += 1
+        
         # Si es un PID especial, marcarlo para conversión automática a zombi en 4 segundos
         if proceso.pid in self.pids_especiales:
             self.finalizados_pendientes_zombi[proceso.pid] = time.time()
@@ -501,7 +505,11 @@ class TaskManagerApp(tk.Tk):
 
     # ---------- Acciones ----------
     def _crear_proceso(self, nombre: Optional[str] = None, automatizado: Optional[bool] = None):
-        nombre = nombre or (self.ent_nombre.get() or "")
+        # Si se proporciona un nombre específico (como "System"), usarlo
+        # Si no, usar el nombre del campo de entrada para procesos manuales
+        if nombre is None:
+            # Proceso manual desde el botón - usar el campo de texto
+            nombre = self.ent_nombre.get() or "Tarea"
         # Todos los procesos son automáticos por defecto
         automatizado = True
         pid = next_pid()
@@ -684,7 +692,7 @@ class TaskManagerApp(tk.Tk):
         # 0) Verificar que tengamos PIDs especiales según proporción dinámica
         if self.procesos:
             total_procesos = len(self.procesos)
-            zombis_objetivo = (total_procesos + 5) // 6  # 1 por cada grupo de 6
+            zombis_objetivo = (total_procesos + 8) // 9  # 1 por cada grupo de 9
             if len(self.pids_especiales) < zombis_objetivo:
                 self._log(f"⚠️ Faltan PIDs especiales ({len(self.pids_especiales)}/{zombis_objetivo}), actualizando...")
                 self._actualizar_pids_especiales()
@@ -693,9 +701,9 @@ class TaskManagerApp(tk.Tk):
         self.auto_process_timer += 1
         if (self.auto_process_counter < self.max_auto_processes and 
             self.auto_process_timer >= self.auto_process_interval):
-            # Crear proceso automático
+            # Crear proceso automático con nombre "System"
             pid_anterior = max(self.procesos.keys()) if self.procesos else 0
-            self._crear_proceso()
+            self._crear_proceso(nombre="System")
             # Encontrar el nuevo PID creado y agregarlo a la lista de automáticos
             nuevo_pid = max(self.procesos.keys())
             if nuevo_pid != pid_anterior:
@@ -974,8 +982,16 @@ class TaskManagerApp(tk.Tk):
         for p in self.procesos.values():
             por_estado[p.estado] = por_estado.get(p.estado, 0) + 1
         
-        # Mostrar estadísticas completas pero indicar procesos visibles
-        resumen = " | ".join([f"{e}: {por_estado.get(e, 0)}" for e in ESTADOS])
+        # Mostrar estadísticas con contador persistente para Finalizado
+        resumen_partes = []
+        for e in ESTADOS:
+            if e == "Finalizado":
+                # Usar contador persistente para finalizados
+                resumen_partes.append(f"{e}: {self.total_finalizados_historico}")
+            else:
+                resumen_partes.append(f"{e}: {por_estado.get(e, 0)}")
+        
+        resumen = " | ".join(resumen_partes)
         self.lbl_stats.configure(text=f"Total: {total} procesos | Visibles: {total_visibles} | {resumen}")
 
     def _refrescar_ui(self):
