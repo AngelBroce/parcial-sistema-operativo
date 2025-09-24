@@ -14,8 +14,16 @@ class VentanaAuditoria(tk.Toplevel):
         super().__init__(parent)
         self.parent = parent
         self.title("Auditoría del Sistema - Log de Eventos")
-        self.geometry("600x400")
-        self.minsize(500, 300)
+        
+        # Dimensiones adaptativas para la ventana de auditoría
+        parent_width = parent.winfo_width() if parent.winfo_width() > 1 else 1000
+        parent_height = parent.winfo_height() if parent.winfo_height() > 1 else 600
+        
+        audit_width = min(max(int(parent_width * 0.7), 400), 800)
+        audit_height = min(max(int(parent_height * 0.6), 300), 500)
+        
+        self.geometry(f"{audit_width}x{audit_height}")
+        self.minsize(400, 250)  # Tamaño mínimo más pequeño
         
         # Configurar ventana
         self.rowconfigure(0, weight=1)
@@ -279,8 +287,24 @@ class TaskManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Mini Administrador de Tareas - SO")
-        self.geometry("1000x600")
-        self.minsize(900, 550)
+        
+        # Obtener dimensiones de la pantalla para dimensiones adaptativas
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        # Calcular dimensiones adaptativas (85% de la pantalla, con máximos y mínimos)
+        width = min(max(int(screen_width * 0.85), 800), 1200)
+        height = min(max(int(screen_height * 0.75), 500), 800)
+        
+        # Centrar la ventana en la pantalla
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(800, 500)  # Tamaño mínimo más pequeño y adaptable
+        
+        # Permitir que la ventana se maximice correctamente
+        self.state('normal')  # Asegurar que empiece en estado normal
 
         # Modelo
         self.procesos: Dict[int, Proceso] = {}
@@ -336,11 +360,26 @@ class TaskManagerApp(tk.Tk):
         left.rowconfigure(1, weight=1)
         left.columnconfigure(0, weight=1)
 
-        title = ttk.Label(left, text="Procesos", font=("Segoe UI", 12, "bold"))
+        title = ttk.Label(left, text="Procesos", font=("Segoe UI", 11, "bold"))
         title.grid(row=0, column=0, sticky="w")
 
         columns = ("PID", "Nombre", "Estado", "Tiempo", "Duración", "CPU", "Memoria", "Disco")
-        self.tree = ttk.Treeview(left, columns=columns, show="headings", height=18)
+        # Altura adaptativa del Treeview - más conservadora para pantallas pequeñas
+        tree_height = 12  # Altura reducida pero visible
+        self.tree = ttk.Treeview(left, columns=columns, show="headings", height=tree_height)
+        
+        # Configurar columnas con anchos apropiados
+        column_widths = {
+            "PID": 70,
+            "Nombre": 140,
+            "Estado": 90,
+            "Tiempo": 70,
+            "Duración": 80,
+            "CPU": 70,
+            "Memoria": 90,
+            "Disco": 70
+        }
+        
         for col in columns:
             self.tree.heading(col, text=col)
             if col == "Duración":
@@ -351,25 +390,33 @@ class TaskManagerApp(tk.Tk):
                 self.tree.heading(col, text="Memoria")
             elif col == "Disco":
                 self.tree.heading(col, text="Disco")
-            self.tree.column(col, anchor=tk.CENTER)
+            
+            # Configurar ancho de columna
+            self.tree.column(col, anchor=tk.CENTER, width=column_widths[col], minwidth=50)
         self.tree.grid(row=1, column=0, sticky="nsew")
 
         # Colores por estado usando tags
         for estado, color in ESTADO_COLOR.items():
             self.tree.tag_configure(estado, background=color)
 
+        # Scrollbars vertical y horizontal
         vsb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
+        hsb = ttk.Scrollbar(left, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         vsb.grid(row=1, column=1, sticky="ns")
+        hsb.grid(row=2, column=0, sticky="ew")
+        
+        # Ajustar las filas para que el scrollbar horizontal no interfiera
+        left.rowconfigure(2, weight=0)
 
         # Resumen/estado
         self.lbl_stats = ttk.Label(left, text="Resumen: 0 procesos")
-        self.lbl_stats.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.lbl_stats.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
         
         # Recursos del sistema
         self.lbl_recursos = ttk.Label(left, text="Recursos del Sistema: CPU: 0% | RAM: 0 MB/8192 MB | Disco: 0%", 
                                      foreground="blue")
-        self.lbl_recursos.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        self.lbl_recursos.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # Panel derecho - Controles
         right = ttk.Frame(self)
@@ -378,48 +425,56 @@ class TaskManagerApp(tk.Tk):
 
         # Sección CPU y flujo (simplificado para SO automático)
         grp_cpu = ttk.LabelFrame(right, text="CPU / Flujo automático")
-        grp_cpu.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        grp_cpu.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
-        self.btn_start = ttk.Button(grp_cpu, text="▶ Iniciar Simulación", command=self._start_cpu)
-        self.btn_stop = ttk.Button(grp_cpu, text="⏸ Pausar Simulación", command=self._stop_cpu)
-        self.btn_start.grid(row=0, column=0, padx=4, pady=4)
-        self.btn_stop.grid(row=0, column=1, padx=4, pady=4)
+        self.btn_start = ttk.Button(grp_cpu, text="▶ Iniciar", command=self._start_cpu)
+        self.btn_stop = ttk.Button(grp_cpu, text="⏸ Pausar", command=self._stop_cpu)
+        self.btn_start.grid(row=0, column=0, padx=3, pady=3, sticky="ew")
+        self.btn_stop.grid(row=0, column=1, padx=3, pady=3, sticky="ew")
+        
+        # Hacer que los botones se expandan proporcionalmente
+        grp_cpu.columnconfigure(0, weight=1)
+        grp_cpu.columnconfigure(1, weight=1)
         
         # Inicialmente pausado: botón Iniciar habilitado, Pausar deshabilitado
         self._actualizar_botones_control()
 
-        ttk.Checkbutton(grp_cpu, text="Progreso automático", variable=self.auto_progress).grid(row=1, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        ttk.Checkbutton(grp_cpu, text="Progreso automático", variable=self.auto_progress).grid(row=1, column=0, columnspan=2, padx=3, pady=3, sticky="w")
 
         # Sección creación
         grp_crea = ttk.LabelFrame(right, text="Procesos")
-        grp_crea.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        grp_crea.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        grp_crea.columnconfigure(1, weight=1)
 
-        ttk.Label(grp_crea, text="Nombre").grid(row=0, column=0, padx=4, pady=4, sticky="e")
+        ttk.Label(grp_crea, text="Nombre").grid(row=0, column=0, padx=3, pady=3, sticky="e")
         self.ent_nombre = ttk.Entry(grp_crea)
-        self.ent_nombre.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+        self.ent_nombre.grid(row=0, column=1, padx=3, pady=3, sticky="ew")
         self.ent_nombre.insert(0, "Tarea")
 
         btn_crear = ttk.Button(grp_crea, text="Crear Proceso", command=self._crear_proceso)
-        btn_crear.grid(row=1, column=0, padx=4, pady=4)
+        btn_crear.grid(row=1, column=0, padx=3, pady=3, sticky="ew")
         btn_crear5 = ttk.Button(grp_crea, text="Crear 5", command=lambda: self._crear_varios(5))
-        btn_crear5.grid(row=1, column=1, padx=4, pady=4)
+        btn_crear5.grid(row=1, column=1, padx=3, pady=3, sticky="ew")
 
         # Acciones manuales
         grp_acc = ttk.LabelFrame(right, text="Acciones manuales")
-        grp_acc.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        ttk.Button(grp_acc, text="Kill Tarea", command=self._finalizar_sel).grid(row=0, column=0, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Kill Zombi", command=self._kill_zombi).grid(row=0, column=1, padx=4, pady=4)
+        grp_acc.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        grp_acc.columnconfigure(0, weight=1)
+        grp_acc.columnconfigure(1, weight=1)
+        
+        ttk.Button(grp_acc, text="Kill Tarea", command=self._finalizar_sel).grid(row=0, column=0, padx=3, pady=3, sticky="ew")
+        ttk.Button(grp_acc, text="Kill Zombi", command=self._kill_zombi).grid(row=0, column=1, padx=3, pady=3, sticky="ew")
 
         # Leyenda de colores de estados
         grp_leg = ttk.LabelFrame(right, text="Leyenda de estados")
-        grp_leg.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        grp_leg.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         r = 0
         c = 0
         for estado, color in ESTADO_COLOR.items():
-            swatch = tk.Canvas(grp_leg, width=12, height=12, highlightthickness=1, highlightbackground="#888")
-            swatch.create_rectangle(0, 0, 12, 12, fill=color, outline="")
-            swatch.grid(row=r, column=c*2, padx=(4, 2), pady=2, sticky="w")
-            ttk.Label(grp_leg, text=estado, font=("Segoe UI", 8)).grid(row=r, column=c*2+1, padx=(2, 8), pady=2, sticky="w")
+            swatch = tk.Canvas(grp_leg, width=10, height=10, highlightthickness=1, highlightbackground="#888")
+            swatch.create_rectangle(0, 0, 10, 10, fill=color, outline="")
+            swatch.grid(row=r, column=c*2, padx=(3, 1), pady=1, sticky="w")
+            ttk.Label(grp_leg, text=estado, font=("Segoe UI", 8)).grid(row=r, column=c*2+1, padx=(1, 6), pady=1, sticky="w")
             c += 1
             if c >= 2:  # Solo 2 columnas en lugar de 3
                 c = 0
@@ -429,8 +484,8 @@ class TaskManagerApp(tk.Tk):
         grp_auditoria = ttk.LabelFrame(right, text="Auditoría")
         grp_auditoria.grid(row=4, column=0, sticky="ew")
         
-        btn_auditoria = ttk.Button(grp_auditoria, text="📋 Abrir Log de Eventos", command=self._abrir_auditoria)
-        btn_auditoria.pack(padx=8, pady=8)
+        btn_auditoria = ttk.Button(grp_auditoria, text="📋 Log de Eventos", command=self._abrir_auditoria)
+        btn_auditoria.pack(padx=6, pady=6, fill="x")
 
     # ---------- Utilidades ----------
     def _abrir_auditoria(self):
