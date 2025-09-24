@@ -6,6 +6,49 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
 # ===============================
+# Modelo de Procesos y Estados
+# ===============================
+
+def generar_duracion_ejecucion_variada() -> int:
+    """
+    Genera duración de ejecución variada y observable:
+    - 30% procesos cortos (3-5 ticks = 9-15 segundos)
+    - 40% procesos normales (6-10 ticks = 18-30 segundos)  
+    - 25% procesos largos (12-18 ticks = 36-54 segundos)
+    - 5% procesos muy largos (20-30 ticks = 60-90 segundos)
+    """
+    tipo = random.random()
+    if tipo < 0.3:  # Procesos cortos
+        return random.randint(3, 5)
+    elif tipo < 0.7:  # Procesos normales
+        return random.randint(6, 10)
+    elif tipo < 0.95:  # Procesos largos
+        return random.randint(12, 18)
+    else:  # Procesos muy largos
+        return random.randint(20, 30)
+
+def generar_tiempo_ejecucion_variado() -> int:
+    """Genera tiempo variado para Listo -> Ejecución (4, 7, o 9 ticks)"""
+    opciones = [4, 7, 9]
+    return random.choice(opciones)
+
+def generar_tiempo_bloqueo() -> int:
+    """Genera tiempo de bloqueo (3-5 ticks)"""
+    return random.randint(3, 5)
+
+def generar_tiempo_admision_variado() -> int:
+    """Genera tiempo de admisión FIJO para Nuevo -> Listo (siempre 3 ticks)"""
+    return 3
+
+def generar_tiempo_espera_cpu() -> int:
+    """Genera tiempo de espera variado en Listo antes de poder ejecutar (4, 7, o 9 ticks)"""
+    return generar_tiempo_ejecucion_variado()
+
+def generar_linger_zombi_variado() -> int:
+    """Genera tiempo de linger para zombis (5-12 ticks = 15-36 segundos)"""
+    return random.randint(5, 12)
+
+# ===============================
 # Modelo de Proceso y Planificador
 # ===============================
 
@@ -21,6 +64,7 @@ ESTADO_COLOR = {
     "Nuevo": "#D0E1FF",        # azul claro
     "Listo": "#E7FFD0",        # verde claro
     "Ejecución": "#FFF3B0",    # amarillo claro
+    "Bloqueado": "#FFB3B3",    # rojo claro
     "Zombi": "#D6C6F5",        # lila
     "Finalizado": "#E0E0E0",    # gris
 }
@@ -41,23 +85,37 @@ class Proceso:
     # Simulación automática
     tiempo_estado: int = 0           # ticks acumulados en el estado actual
     duracion_ejecucion: int = 0      # ticks que requiere en Ejecución
+    tiempo_admision: int = 0         # ticks requeridos para pasar de Nuevo a Listo
+    tiempo_espera_cpu: int = 0       # ticks que debe esperar en Listo antes de poder ejecutar
+    tiempo_bloqueo: int = 0          # ticks que permanecerá en Bloqueado (3-5 ticks)
+    proceso_dependencia: Optional[int] = None  # PID del proceso del cual depende cuando está bloqueado
     linger_zombi: int = 0            # ticks que permanecerá en Zombi
+    tiempo_finalizado: float = 0     # timestamp cuando pasó a Finalizado (para auto-eliminación)
     padre: Optional[int] = None
-    automatizado: bool = False
+    automatizado: bool = True
 
     def to_row(self) -> List[str]:
+        duracion_str = f"{self.duracion_ejecucion}" if self.duracion_ejecucion > 0 else "Auto"
+        
+        # Mostrar dependencia en el nombre si está bloqueado
+        nombre_display = self.nombre
+        if self.estado == "Bloqueado" and self.proceso_dependencia:
+            nombre_display = f"{self.nombre} (→{self.proceso_dependencia})"
+        
         return [
             str(self.pid),
-            self.nombre,
+            nombre_display,
             self.estado,
             str(self.tiempo_estado),
-            "Sí" if self.automatizado else "No",
+            duracion_str,
         ]
 
 class Planificador:
     def __init__(self):
         self.cola_listos: List[int] = []  # pids
+        self.procesos_bloqueados: List[int] = []  # pids de procesos bloqueados
         self.en_ejecucion: Optional[int] = None
+        self.proceso_con_prioridad: Optional[int] = None  # PID del proceso ejecutándose por aging
 
     def admitir(self, proceso: Proceso):
         if proceso.estado == "Nuevo":
@@ -66,16 +124,53 @@ class Planificador:
             self.cola_listos.append(proceso.pid)
 
     def asignar_cpu(self, procesos: Dict[int, Proceso]):
-        # Si no hay ejecución actual o se liberó, tomar el siguiente listo
+        # FIFO estricto: el primero en la cola es el próximo en ejecutar
         if self.en_ejecucion is None and self.cola_listos:
-            pid = self.cola_listos.pop(0)
+            # Tomar siempre el primer proceso de la cola (FIFO)
+            pid = self.cola_listos[0]
             p = procesos.get(pid)
             if p and p.estado == "Listo":
-                p.estado = "Ejecución"
-                p.tiempo_estado = 0
-                if p.duracion_ejecucion <= 0:
-                    p.duracion_ejecucion = random.randint(3, 6)
-                self.en_ejecucion = pid
+                # Verificar si ha esperado el tiempo mínimo
+                if p.tiempo_estado >= p.tiempo_espera_cpu:
+                    # Ha esperado suficiente, puede ejecutar
+                    self.cola_listos.pop(0)
+                    p.estado = "Ejecución"
+                    p.tiempo_estado = 0
+                    if p.duracion_ejecucion <= 0:
+                        p.duracion_ejecucion = generar_duracion_ejecucion_variada()
+                    self.en_ejecucion = pid
+    
+    def bloquear_proceso(self, proceso: Proceso, procesos_disponibles: Dict[int, Proceso]):
+        """Bloquea un proceso que está en ejecución y establece dependencia"""
+        if proceso.estado == "Ejecución":
+            proceso.estado = "Bloqueado"
+            proceso.tiempo_estado = 0
+            proceso.tiempo_bloqueo = generar_tiempo_bloqueo()
+            
+            # Buscar un proceso del cual depender (solo Listo o Ejecución)
+            candidatos_dependencia = [
+                p for p in procesos_disponibles.values() 
+                if p.pid != proceso.pid and p.estado in ["Listo", "Ejecución"]
+            ]
+            
+            if candidatos_dependencia:
+                # Elegir el proceso con menor PID (más antiguo) como dependencia
+                proceso_dependencia = min(candidatos_dependencia, key=lambda x: x.pid)
+                proceso.proceso_dependencia = proceso_dependencia.pid
+            else:
+                proceso.proceso_dependencia = None
+                
+            self.procesos_bloqueados.append(proceso.pid)
+            self.en_ejecucion = None
+    
+    def desbloquear_proceso(self, proceso: Proceso):
+        """Desbloquea un proceso y lo devuelve a Listo"""
+        if proceso.estado == "Bloqueado" and proceso.pid in self.procesos_bloqueados:
+            proceso.estado = "Listo"
+            proceso.tiempo_estado = 0
+            proceso.proceso_dependencia = None  # Limpiar dependencia
+            self.procesos_bloqueados.remove(proceso.pid)
+            self.cola_listos.append(proceso.pid)  # Va al final de la cola FIFO
 
     def tick(self, procesos: Dict[int, Proceso]):
         # En el modo automático solo aseguramos que haya asignación si está libre
@@ -85,6 +180,30 @@ class Planificador:
 # ===============================
 # Interfaz de Usuario Tkinter
 # ===============================
+
+def generar_duracion_ejecucion_variada() -> int:
+    """
+    Genera duración de ejecución variada automáticamente (más lenta para observar):
+    - 30% procesos cortos (3-5 ticks)
+    - 40% procesos normales (6-10 ticks)  
+    - 25% procesos largos (12-18 ticks)
+    - 5% procesos muy largos (20-30 ticks)
+    """
+    tipo = random.random()
+    if tipo < 0.3:  # Procesos cortos
+        return random.randint(3, 5)
+    elif tipo < 0.7:  # Procesos normales
+        return random.randint(6, 10)
+    elif tipo < 0.95:  # Procesos largos
+        return random.randint(12, 18)
+    else:  # Procesos muy largos
+        return random.randint(20, 30)
+
+# FUNCIÓN ELIMINADA: estaba duplicada y causaba el error de tiempos
+
+def generar_linger_zombi_variado() -> int:
+    """Genera tiempo de linger para zombis (más lento)"""
+    return random.randint(5, 12)
 
 class TaskManagerApp(tk.Tk):
     def __init__(self):
@@ -97,28 +216,24 @@ class TaskManagerApp(tk.Tk):
         self.procesos: Dict[int, Proceso] = {}
         self.planificador = Planificador()
 
-        # Configuración de reloj
-        self.tick_ms = 700  # ms por tick (ajustable en UI)
-        self.cpu_corriendo = False
+        # Configuración de reloj automático
+        self.tick_ms = 3000  # ms por tick (3 segundos - lento para observar cambios)
+        self.cpu_corriendo = False  # NO iniciar automáticamente - esperar comando del usuario
 
-        # Flags de automatización
-        self.auto_progress = tk.BooleanVar(value=True)  # activar/desactivar cambios automáticos de estado
-        self.auto_zombis = tk.BooleanVar(value=True)    # zombis aleatorios desde Ejecución
-        self.auto_zombi_interval = tk.BooleanVar(value=True)  # crear 1 zombi cada 3-4 procesos creados
-        self.auto_recoleccion = tk.BooleanVar(value=True)     # recolectar zombis automáticamente tras linger
-        self.auto_crear_min5 = tk.BooleanVar(value=True)
-
-        # Parámetros
-        self.base_ticks_var = tk.IntVar(value=4)  # duración base de cambios (admisión/ejecución/linger)
-        self._creados_desde_zombi = 0
-        self._proximo_intervalo_zombi = random.choice([3, 4])
+        # Sistema completamente automático (sin opciones de configuración)
+        self.auto_progress = tk.BooleanVar(value=True)  # Siempre activo
+        
+        # Lista de PIDs especiales que se convertirán en zombis automáticamente
+        self.pids_especiales = []  # Guardaremos 3 PIDs aleatorios aquí
+        self.finalizados_pendientes_zombi = {}  # PID -> tiempo_finalizacion para conversión a zombi
 
         # Construcción UI
         self._build_ui()
-        self._log("Aplicación iniciada.")
+        self._log("Simulador de Sistema Operativo iniciado automáticamente.")
 
-        # primer refresco
+        # Inicio automático del sistema
         self.after(200, self._refrescar_ui)
+        self.after(1000, self._start_cpu)  # Iniciar CPU automáticamente tras 1 segundo
 
     # ---------- Construcción UI ----------
     def _build_ui(self):
@@ -135,10 +250,12 @@ class TaskManagerApp(tk.Tk):
         title = ttk.Label(left, text="Procesos", font=("Segoe UI", 12, "bold"))
         title.grid(row=0, column=0, sticky="w")
 
-        columns = ("PID", "Nombre", "Estado", "Tiempo", "Auto")
+        columns = ("PID", "Nombre", "Estado", "Tiempo", "Duración")
         self.tree = ttk.Treeview(left, columns=columns, show="headings", height=18)
         for col in columns:
             self.tree.heading(col, text=col)
+            if col == "Duración":
+                self.tree.heading(col, text="Duración Ejec.")
             self.tree.column(col, anchor=tk.CENTER)
         self.tree.grid(row=1, column=0, sticky="nsew")
 
@@ -159,25 +276,19 @@ class TaskManagerApp(tk.Tk):
         right.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
         right.columnconfigure(0, weight=1)
 
-        # Sección CPU y flujo
+        # Sección CPU y flujo (simplificado para SO automático)
         grp_cpu = ttk.LabelFrame(right, text="CPU / Flujo automático")
         grp_cpu.grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
-        self.btn_start = ttk.Button(grp_cpu, text="Iniciar CPU", command=self._start_cpu)
-        self.btn_stop = ttk.Button(grp_cpu, text="Pausar CPU", command=self._stop_cpu)
+        self.btn_start = ttk.Button(grp_cpu, text="▶ Iniciar Simulación", command=self._start_cpu)
+        self.btn_stop = ttk.Button(grp_cpu, text="⏸ Pausar Simulación", command=self._stop_cpu)
         self.btn_start.grid(row=0, column=0, padx=4, pady=4)
         self.btn_stop.grid(row=0, column=1, padx=4, pady=4)
+        
+        # Inicialmente pausado: botón Iniciar habilitado, Pausar deshabilitado
+        self._actualizar_botones_control()
 
-        ttk.Label(grp_cpu, text="Velocidad (ms/tick)").grid(row=1, column=0, padx=4, pady=4, sticky="e")
-        self.scale_vel = tk.Scale(grp_cpu, from_=200, to=1500, orient=tk.HORIZONTAL, command=self._cambiar_velocidad)
-        self.scale_vel.set(self.tick_ms)
-        self.scale_vel.grid(row=1, column=1, padx=4, pady=4, sticky="ew")
-
-        ttk.Label(grp_cpu, text="Duración base (ticks)").grid(row=2, column=0, padx=4, pady=4, sticky="e")
-        self.spin_base = tk.Spinbox(grp_cpu, from_=1, to=12, width=5, textvariable=self.base_ticks_var)
-        self.spin_base.grid(row=2, column=1, padx=4, pady=4, sticky="w")
-
-        ttk.Checkbutton(grp_cpu, text="Progreso automático", variable=self.auto_progress).grid(row=3, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        ttk.Checkbutton(grp_cpu, text="Progreso automático", variable=self.auto_progress).grid(row=1, column=0, columnspan=2, padx=4, pady=4, sticky="w")
 
         # Sección creación
         grp_crea = ttk.LabelFrame(right, text="Procesos")
@@ -188,15 +299,10 @@ class TaskManagerApp(tk.Tk):
         self.ent_nombre.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
         self.ent_nombre.insert(0, "Tarea")
 
-        self.var_auto_proc = tk.BooleanVar(value=True)
-        ttk.Checkbutton(grp_crea, text="Automatizado", variable=self.var_auto_proc).grid(row=1, column=0, columnspan=2, padx=4, pady=4, sticky="w")
-
         btn_crear = ttk.Button(grp_crea, text="Crear Proceso", command=self._crear_proceso)
-        btn_crear.grid(row=2, column=0, padx=4, pady=4)
+        btn_crear.grid(row=1, column=0, padx=4, pady=4)
         btn_crear5 = ttk.Button(grp_crea, text="Crear 5", command=lambda: self._crear_varios(5))
-        btn_crear5.grid(row=2, column=1, padx=4, pady=4)
-
-        ttk.Checkbutton(grp_crea, text="Mantener mínimo 5", variable=self.auto_crear_min5).grid(row=3, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        btn_crear5.grid(row=1, column=1, padx=4, pady=4)
 
         # Guía rápida
         help_txt = (
@@ -206,26 +312,17 @@ class TaskManagerApp(tk.Tk):
         )
         ttk.Label(grp_crea, text=help_txt, wraplength=320, foreground="#555").grid(row=4, column=0, columnspan=2, padx=4, pady=(6, 4), sticky="w")
 
-        # Automatización
-        grp_est = ttk.LabelFrame(right, text="Automatización")
-        grp_est.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        ttk.Checkbutton(grp_est, text="Zombis aleatorios (en ejecución)", variable=self.auto_zombis).grid(row=0, column=0, padx=4, pady=4, sticky="w")
-        ttk.Checkbutton(grp_est, text="Zombi cada 3-4 creaciones", variable=self.auto_zombi_interval).grid(row=0, column=1, padx=4, pady=4, sticky="w")
-        ttk.Checkbutton(grp_est, text="Auto-recolección Zombi", variable=self.auto_recoleccion).grid(row=1, column=0, padx=4, pady=4, sticky="w")
-
         # Acciones manuales
         grp_acc = ttk.LabelFrame(right, text="Acciones manuales")
-        grp_acc.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        ttk.Button(grp_acc, text="Admitir Seleccionados", command=self._admitir_seleccionados).grid(row=0, column=0, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Admitir Nuevos", command=self._admitir_todos_nuevos).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Forzar Ejecución", command=self._forzar_ejec_sel).grid(row=0, column=2, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Finalizar", command=self._finalizar_sel).grid(row=0, column=3, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Crear Zombi", command=self._crear_zombi).grid(row=1, column=0, padx=4, pady=4)
-        ttk.Button(grp_acc, text="Recolectar Zombis", command=self._recolectar_zombis).grid(row=1, column=1, padx=4, pady=4)
+        grp_acc.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(grp_acc, text="Forzar Ejecución", command=self._forzar_ejec_sel).grid(row=0, column=0, padx=4, pady=4)
+        ttk.Button(grp_acc, text="Finalizar", command=self._finalizar_sel).grid(row=0, column=1, padx=4, pady=4)
+        ttk.Button(grp_acc, text="Crear Zombi", command=self._crear_zombi).grid(row=0, column=2, padx=4, pady=4)
+        ttk.Button(grp_acc, text="Kill Zombi", command=self._kill_zombi).grid(row=1, column=0, padx=4, pady=4)
 
         # Leyenda de colores de estados
         grp_leg = ttk.LabelFrame(right, text="Leyenda de estados")
-        grp_leg.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        grp_leg.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         r = 0
         c = 0
         for estado, color in ESTADO_COLOR.items():
@@ -240,8 +337,8 @@ class TaskManagerApp(tk.Tk):
 
         # Log
         grp_log = ttk.LabelFrame(right, text="Eventos")
-        grp_log.grid(row=5, column=0, sticky="nsew")
-        right.rowconfigure(5, weight=1)
+        grp_log.grid(row=4, column=0, sticky="nsew")
+        right.rowconfigure(4, weight=1)
         self.txt_log = tk.Text(grp_log, height=8, state="disabled")
         self.txt_log.pack(fill="both", expand=True)
 
@@ -251,12 +348,6 @@ class TaskManagerApp(tk.Tk):
         self.txt_log.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         self.txt_log.see("end")
         self.txt_log.configure(state="disabled")
-
-    def _cambiar_velocidad(self, value: str):
-        try:
-            self.tick_ms = max(50, int(float(value)))
-        except Exception:
-            pass
 
     def _selected_pids(self) -> List[int]:
         sel = []
@@ -268,30 +359,94 @@ class TaskManagerApp(tk.Tk):
                 continue
         return sel
 
+    def _actualizar_pids_especiales(self):
+        """Actualiza la lista de PIDs especiales dinámicamente: 1 por cada grupo de 6 procesos"""
+        total_procesos = len(self.procesos)
+        # Calcular cuántos PIDs especiales necesitamos: 1 por cada 6 procesos (redondeando hacia arriba)
+        zombis_objetivo = (total_procesos + 5) // 6  # Equivale a math.ceil(total_procesos / 6)
+        
+        self._log(f"📊 ACTUALIZACIÓN PIDs: Total={total_procesos}, Objetivo zombis={zombis_objetivo} (cada 6), Actuales={len(self.pids_especiales)} {self.pids_especiales}")
+        
+        # Si necesitamos más PIDs especiales (se agregaron procesos)
+        if len(self.pids_especiales) < zombis_objetivo:
+            # Obtener PIDs candidatos (que no sean especiales aún)
+            candidatos = [pid for pid in self.procesos.keys() if pid not in self.pids_especiales]
+            self._log(f"📊 Necesitamos {zombis_objetivo - len(self.pids_especiales)} PIDs más. Candidatos: {candidatos}")
+            
+            # Agregar PIDs aleatorios hasta alcanzar el objetivo
+            while len(self.pids_especiales) < zombis_objetivo and candidatos:
+                nuevo_especial = random.choice(candidatos)
+                self.pids_especiales.append(nuevo_especial)
+                candidatos.remove(nuevo_especial)
+                
+                # Calcular en qué "grupo de 6" estamos
+                grupo_actual = (len(self.pids_especiales) - 1) * 6 + 1
+                grupo_hasta = len(self.pids_especiales) * 6
+                self._log(f"🎯 PID {nuevo_especial} seleccionado para zombi #{len(self.pids_especiales)} (procesos {grupo_actual}-{grupo_hasta})")
+        
+        # Si tenemos demasiados PIDs especiales (por eliminación de procesos)
+        elif len(self.pids_especiales) > zombis_objetivo:
+            # Remover PIDs que ya no existen en el sistema
+            pids_especiales_antiguos = self.pids_especiales.copy()
+            self.pids_especiales = [pid for pid in self.pids_especiales if pid in self.procesos]
+            
+            if len(pids_especiales_antiguos) != len(self.pids_especiales):
+                self._log(f"🎯 PIDs especiales limpiados (procesos eliminados del sistema)")
+            
+            # Si aún tenemos demasiados, remover algunos aleatoriamente
+            while len(self.pids_especiales) > zombis_objetivo:
+                pid_a_remover = random.choice(self.pids_especiales)
+                self.pids_especiales.remove(pid_a_remover)
+                self._log(f"🎯 PID {pid_a_remover} removido de especiales (reducción de procesos)")
+        
+        self._log(f"📊 PIDs especiales FINAL: {self.pids_especiales} ({len(self.pids_especiales)} zombis para {total_procesos} procesos)")
+
+    def _finalizar_proceso(self, proceso: Proceso, razon: str = ""):
+        """Marca un proceso como finalizado y registra el timestamp"""
+        proceso.estado = "Finalizado"
+        proceso.tiempo_estado = 0
+        proceso.tiempo_finalizado = time.time()
+        
+        # Si es un PID especial, marcarlo para conversión automática a zombi en 4 segundos
+        if proceso.pid in self.pids_especiales:
+            self.finalizados_pendientes_zombi[proceso.pid] = time.time()
+            self._log(f"⭐ PID {proceso.pid} es ESPECIAL - programado para zombi en 4 segundos")
+        else:
+            self._log(f"📋 PID {proceso.pid} es NORMAL - será eliminado en 80 segundos")
+        
+        msg = f"PID {proceso.pid} finalizado"
+        if razon:
+            msg += f" ({razon})"
+        self._log(msg + ".")
+        
+        # Debug: mostrar estado de PIDs especiales
+        self._log(f"📊 PIDs especiales actuales: {self.pids_especiales}")
+        self._log(f"📊 Pendientes para zombi: {list(self.finalizados_pendientes_zombi.keys())}")
+
     # ---------- Acciones ----------
     def _crear_proceso(self, nombre: Optional[str] = None, automatizado: Optional[bool] = None):
-        nombre = nombre or (self.ent_nombre.get() or "Tarea")
-        if automatizado is None:
-            automatizado = self.var_auto_proc.get()
+        nombre = nombre or (self.ent_nombre.get() or "")
+        # Todos los procesos son automáticos por defecto
+        automatizado = True
         pid = next_pid()
         p = Proceso(
             pid=pid,
             nombre=f"{nombre}-{pid}",
             automatizado=automatizado,
         )
+        
+        # Asignar tiempos automáticamente para simular SO real
+        p.duracion_ejecucion = generar_tiempo_ejecucion_variado()  # 4, 7, 9 ticks para ejecución
+        p.tiempo_admision = generar_tiempo_admision_variado()      # Siempre 3 ticks
+        p.tiempo_espera_cpu = generar_tiempo_espera_cpu()          # 4, 7, 9 ticks para espera CPU
+        p.tiempo_bloqueo = generar_tiempo_bloqueo()                # 3-5 ticks para bloqueo
+        
         self.procesos[pid] = p
-        self._log(f"Creado proceso {p.nombre} (PID={pid}). Estado: Nuevo.")
-
-        # Zombi por intervalo de creaciones
-        self._creados_desde_zombi += 1
-        if self.auto_zombi_interval.get() and self._creados_desde_zombi >= self._proximo_intervalo_zombi:
-            p.estado = "Zombi"
-            p.tiempo_estado = 0
-            base = self.base_ticks_var.get()
-            p.linger_zombi = random.randint(max(1, base), max(2, base + 2))
-            self._log(f"Creación especial: {p.nombre} nace en estado Zombi (linger={p.linger_zombi}).")
-            self._creados_desde_zombi = 0
-            self._proximo_intervalo_zombi = random.choice([3, 4])
+        
+        # Actualizar PIDs especiales según la proporción 1:6
+        self._actualizar_pids_especiales()
+        
+        self._log(f"Creado proceso {p.nombre} (PID={pid}, Nuevo→Listo: {p.tiempo_admision}t, Listo→Ejec: {p.tiempo_espera_cpu}t, Duración: {p.duracion_ejecucion}t). Estado: Nuevo.")
 
         self._refrescar_tree()
 
@@ -322,25 +477,37 @@ class TaskManagerApp(tk.Tk):
         p = self.procesos.get(pid)
         if not p:
             return
-        # Preempt actual
+        
+        # FIFO ESTRICTO: Solo permitir ejecutar si es el primero en la cola de Listo
+        if p.estado == "Listo":
+            if not self.planificador.cola_listos or self.planificador.cola_listos[0] != pid:
+                self._log(f"ERROR FIFO: El proceso {pid} no es el primero en la cola de Listo")
+                return
+        elif p.estado == "Nuevo":
+            # Si está en Nuevo, primero admitirlo a Listo
+            self.planificador.admitir(p)
+            self._log(f"Proceso {pid} admitido a Listo desde Nuevo")
+            return
+        else:
+            self._log(f"ERROR: El proceso {pid} no puede ejecutar desde estado {p.estado}")
+            return
+        
+        # Preempt actual si hay uno ejecutando
         if self.planificador.en_ejecucion is not None and self.planificador.en_ejecucion != pid:
             actual = self.procesos.get(self.planificador.en_ejecucion)
             if actual and actual.estado == "Ejecución":
                 actual.estado = "Listo"
                 actual.tiempo_estado = 0
                 self.planificador.cola_listos.insert(0, actual.pid)
-        # Quitar de cola listos si está
-        if p.pid in self.planificador.cola_listos:
-            self.planificador.cola_listos.remove(p.pid)
-        # Subir a ejecución
-        if p.estado == "Nuevo":
-            self.planificador.admitir(p)
+        
+        # Quitar de cola listos y ejecutar (solo si es el primero)
+        self.planificador.cola_listos.pop(0)  # Quitar el primer elemento
         p.estado = "Ejecución"
         p.tiempo_estado = 0
-        base = self.base_ticks_var.get()
         if p.duracion_ejecucion <= 0:
-            p.duracion_ejecucion = random.randint(max(1, base), max(2, base + 2))
+            p.duracion_ejecucion = generar_duracion_ejecucion_variada()
         self.planificador.en_ejecucion = p.pid
+        self._log(f"Proceso {pid} ejecutando (FIFO respetado)")
         self._log(f"Forzado a Ejecución: PID {p.pid}.")
         self._refrescar_tree()
 
@@ -351,9 +518,7 @@ class TaskManagerApp(tk.Tk):
                 continue
             if self.planificador.en_ejecucion == pid:
                 self.planificador.en_ejecucion = None
-            p.estado = "Finalizado"
-            p.tiempo_estado = 0
-            self._log(f"Finalizado manualmente PID {pid}.")
+            self._finalizar_proceso(p, "manualmente")
         self._refrescar_tree()
 
     def _crear_zombi(self):
@@ -365,8 +530,7 @@ class TaskManagerApp(tk.Tk):
                 self.planificador.en_ejecucion = None
             p.estado = "Zombi"
             p.tiempo_estado = 0
-            base = self.base_ticks_var.get()
-            p.linger_zombi = random.randint(max(1, base), max(2, base + 3))
+            p.linger_zombi = generar_linger_zombi_variado()
             self._log(f"PID {pid} enviado a Zombi (linger={p.linger_zombi}).")
         self._refrescar_tree()
 
@@ -374,83 +538,284 @@ class TaskManagerApp(tk.Tk):
         reco = 0
         for p in self.procesos.values():
             if p.estado == "Zombi":
-                p.estado = "Finalizado"
-                p.tiempo_estado = 0
+                self._finalizar_proceso(p, "recolección manual de zombi")
                 reco += 1
         if reco:
             self._log(f"Recolectados {reco} zombi(s) manualmente.")
         self._refrescar_tree()
 
+    def _kill_zombi(self):
+        """Kill solo UN zombi a la vez (el más antiguo por PID)"""
+        zombis = [p for p in self.procesos.values() if p.estado == "Zombi"]
+        
+        if not zombis:
+            self._log("No hay zombis para eliminar.")
+            return
+        
+        # Eliminar el zombi más antiguo (menor PID)
+        zombi_mas_antiguo = min(zombis, key=lambda x: x.pid)
+        pid_eliminado = zombi_mas_antiguo.pid
+        del self.procesos[pid_eliminado]
+        
+        # Remover de PIDs especiales si estaba ahí
+        if pid_eliminado in self.pids_especiales:
+            self.pids_especiales.remove(pid_eliminado)
+        
+        # Actualizar proporción de PIDs especiales
+        self._actualizar_pids_especiales()
+        
+        self._log(f"💀 KILL: Zombi PID {pid_eliminado} eliminado definitivamente del sistema.")
+        self._refrescar_tree()
+
+    def _actualizar_botones_control(self):
+        """Actualiza el estado de los botones según si la simulación está corriendo"""
+        if self.cpu_corriendo:
+            # Simulación corriendo: deshabilitar Iniciar, habilitar Pausar
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="normal")
+        else:
+            # Simulación pausada: habilitar Iniciar, deshabilitar Pausar
+            self.btn_start.config(state="normal")
+            self.btn_stop.config(state="disabled")
+
     def _start_cpu(self):
         if not self.cpu_corriendo:
             self.cpu_corriendo = True
-            self._log("CPU iniciada.")
+            self._actualizar_botones_control()
+            self._log("🚀 Simulación iniciada - El tiempo comenzó a correr")
             self._tick_loop()
 
     def _stop_cpu(self):
         self.cpu_corriendo = False
-        self._log("CPU pausada.")
+        self._actualizar_botones_control()
+        self._log("⏸ Simulación pausada - El tiempo se detuvo")
 
     # ---------- Bucle principal de ticks ----------
     def _tick_loop(self):
         if not self.cpu_corriendo:
             return
 
-        # 1) Mantener mínimo 5 procesos vivos (no finalizados)
-        if self.auto_crear_min5.get():
-            vivos = [p for p in self.procesos.values() if p.estado != "Finalizado"]
-            if len(vivos) < 5:
-                for _ in range(5 - len(vivos)):
-                    self._crear_proceso(automatizado=True)
+        # 0) Verificar que tengamos PIDs especiales según proporción dinámica
+        if self.procesos:
+            total_procesos = len(self.procesos)
+            zombis_objetivo = (total_procesos + 5) // 6  # 1 por cada grupo de 6
+            if len(self.pids_especiales) < zombis_objetivo:
+                self._log(f"⚠️ Faltan PIDs especiales ({len(self.pids_especiales)}/{zombis_objetivo}), actualizando...")
+                self._actualizar_pids_especiales()
 
-        # 2) Cambios automáticos de estado
+        # 1) Cambios automáticos de estado
         if self.auto_progress.get():
-            base = self.base_ticks_var.get()
-            # Nuevo -> Listo tras base ticks
+            # Nuevo -> Listo ESTRICTAMENTE SECUENCIAL (tiempo variable: 4, 5, 7 ticks)
+            procesos_nuevos = [p for p in self.procesos.values() if p.estado == "Nuevo"]
+            
+            # Incrementar tiempo solo del proceso con menor PID en Nuevo
+            if procesos_nuevos:
+                proceso_siguiente = min(procesos_nuevos, key=lambda x: x.pid)
+                proceso_siguiente.tiempo_estado += 1
+                
+                # Cambiar a Listo cuando alcance su tiempo de admisión
+                if proceso_siguiente.tiempo_estado >= proceso_siguiente.tiempo_admision:
+                    self.planificador.admitir(proceso_siguiente)
+                    self._log(f"PID {proceso_siguiente.pid}: Nuevo → Listo ({proceso_siguiente.tiempo_admision} ticks)")
+
+            # Listo -> Ejecución: solo el primero en cola (tiempo variable)
             for p in self.procesos.values():
-                if p.estado == "Nuevo":
+                if p.estado == "Listo":
                     p.tiempo_estado += 1
-                    if p.tiempo_estado >= max(1, base):
-                        self.planificador.admitir(p)
-                        self._log(f"Admitido automáticamente a Listo: PID {p.pid}.")
 
-            # Asignar CPU si libre
+            # Asignar CPU con PRIORIDAD POR ANTIGÜEDAD (aging anti-starvation)
             if self.planificador.en_ejecucion is None and self.planificador.cola_listos:
-                self.planificador.asignar_cpu(self.procesos)
+                
+                # 1. Buscar procesos con MUCHO tiempo esperando (20+ ticks) - PRIORIDAD
+                procesos_hambrientos = []
+                for pid in self.planificador.cola_listos:
+                    p = self.procesos.get(pid)
+                    if p and p.estado == "Listo" and p.tiempo_estado >= 20:
+                        procesos_hambrientos.append(p)
+                
+                # 2. Si hay procesos hambrientos, dar prioridad al más antiguo
+                if procesos_hambrientos:
+                    proceso_elegido = min(procesos_hambrientos, key=lambda x: x.pid)  # Más antiguo por PID
+                    # Mover al frente de la cola para darle prioridad inmediata
+                    self.planificador.cola_listos.remove(proceso_elegido.pid)
+                    self.planificador.cola_listos.insert(0, proceso_elegido.pid)
+                    self._log(f"🚨 AGING: PID {proceso_elegido.pid} promovido por hambruna ({proceso_elegido.tiempo_estado} ticks esperando)")
+                
+                # 3. Ejecutar el primer proceso de la cola (FIFO normal o proceso promovido)
+                pid_primero = self.planificador.cola_listos[0]
+                p_primero = self.procesos.get(pid_primero)
+                if p_primero and p_primero.estado == "Listo" and p_primero.tiempo_estado >= p_primero.tiempo_espera_cpu:
+                    # Ha esperado suficiente, puede ejecutar
+                    self.planificador.cola_listos.pop(0)
+                    p_primero.estado = "Ejecución"
+                    p_primero.tiempo_estado = 0
+                    if p_primero.duracion_ejecucion <= 0:
+                        p_primero.duracion_ejecucion = generar_duracion_ejecucion_variada()
+                    self.planificador.en_ejecucion = p_primero.pid
+                    
+                    # Marcar si fue por aging y registrar
+                    es_por_aging = p_primero.pid in [p.pid for p in procesos_hambrientos]
+                    if es_por_aging:
+                        self.planificador.proceso_con_prioridad = p_primero.pid
+                    
+                    tipo_asignacion = "AGING" if es_por_aging else "FIFO"
+                    self._log(f"PID {p_primero.pid}: Listo → Ejecución ({tipo_asignacion}, esperó {p_primero.tiempo_estado + p_primero.tiempo_espera_cpu} ticks total)")
 
-            # Avanzar ejecución / zombis aleatorios
+            # Ejecución -> Bloqueado/Zombi/Finalizado (tiempo variable)
             pid = self.planificador.en_ejecucion
             if pid is not None:
                 p = self.procesos.get(pid)
                 if p and p.estado == "Ejecución":
-                    if p.duracion_ejecucion <= 0:
-                        p.duracion_ejecucion = random.randint(max(1, base), max(2, base + 2))
                     p.tiempo_estado += 1
-                    if self.auto_zombis.get() and p.automatizado and random.random() < 0.06:
-                        p.estado = "Zombi"
-                        p.tiempo_estado = 0
-                        p.linger_zombi = random.randint(max(1, base), max(2, base + 2))
-                        self.planificador.en_ejecucion = None
-                        self._log(f"PID {p.pid} pasó a Zombi aleatoriamente.")
+                    
+                    # Calcular probabilidad de bloqueo basada en la CARGA del sistema
+                    procesos_esperando = len(self.planificador.cola_listos)
+                    ya_hay_bloqueados = len(self.planificador.procesos_bloqueados) > 0
+                    
+                    # Probabilidad aumenta con más procesos esperando (simulando contención de recursos)
+                    probabilidad_base = 0.02  # 2% base
+                    factor_carga = min(procesos_esperando * 0.015, 0.08)  # Máximo 8% adicional
+                    probabilidad_bloqueo = probabilidad_base + factor_carga
+                    
+                    # Condiciones para bloqueo:
+                    # 1. Debe haber procesos esperando
+                    # 2. NO debe haber otros procesos ya bloqueados
+                    # 3. Debe haber ejecutado al menos 3 ticks
+                    # 4. Probabilidad variable según carga del sistema
+                    puede_bloquear = (procesos_esperando > 0 and 
+                                    not ya_hay_bloqueados and 
+                                    p.tiempo_estado >= 3 and 
+                                    random.random() < probabilidad_bloqueo)
+                    
+                    if puede_bloquear:
+                        # Si este proceso tenía prioridad, limpiar la marca antes de bloquearlo
+                        if self.planificador.proceso_con_prioridad == p.pid:
+                            self.planificador.proceso_con_prioridad = None
+                            self._log(f"🔓 PRIORIDAD LIBERADA: PID {p.pid} se bloqueó, procesos bloqueados pueden cambiar de estado")
+                        
+                        # Bloquear el proceso con dependencias
+                        self.planificador.bloquear_proceso(p, self.procesos)
+                        
+                        # Log con información de dependencia
+                        if p.proceso_dependencia:
+                            proceso_dep = self.procesos.get(p.proceso_dependencia)
+                            estado_dep = proceso_dep.estado if proceso_dep else "DESCONOCIDO"
+                            self._log(f"PID {p.pid}: Ejecución → Bloqueado (I/O, depende de PID {p.proceso_dependencia} [{estado_dep}])")
+                        else:
+                            self._log(f"PID {p.pid}: Ejecución → Bloqueado (I/O independiente, prob={probabilidad_bloqueo:.1%})")
                     elif p.tiempo_estado >= p.duracion_ejecucion:
-                        p.estado = "Finalizado"
+                        # Terminar normalmente
                         self.planificador.en_ejecucion = None
-                        self._log(f"PID {p.pid} finalizó su ejecución.")
-
-        # 3) Recolección automática de zombis (independiente del progreso auto)
-        if self.auto_recoleccion.get():
-            base = self.base_ticks_var.get()
+                        
+                        # Si este proceso terminó y tenía prioridad, limpiar la marca
+                        if self.planificador.proceso_con_prioridad == p.pid:
+                            self.planificador.proceso_con_prioridad = None
+                            self._log(f"🔓 PRIORIDAD LIBERADA: PID {p.pid} terminó, procesos bloqueados pueden cambiar de estado")
+                        
+                        # TODOS los procesos van primero a Finalizado
+                        # Solo los PIDs especiales se convertirán en zombi después de 4 segundos
+                        self._finalizar_proceso(p, f"{p.duracion_ejecucion} ticks completados")
+            
+            # Bloqueado -> Listo (SOLO si no hay proceso con prioridad ejecutándose)
             for p in self.procesos.values():
-                if p.estado == "Zombi":
+                if p.estado == "Bloqueado":
                     p.tiempo_estado += 1
-                    if p.linger_zombi <= 0:
-                        p.linger_zombi = random.randint(max(1, base), max(2, base + 2))
-                    if p.tiempo_estado >= p.linger_zombi:
-                        p.estado = "Finalizado"
-                        p.tiempo_estado = 0
-                        self._log(f"PID {p.pid} recolectado de Zombi -> Finalizado.")
+                    if p.tiempo_estado >= p.tiempo_bloqueo:
+                        # Verificar condiciones para desbloqueo
+                        hay_proceso_prioritario = self.planificador.proceso_con_prioridad is not None
+                        
+                        # Verificar dependencia del proceso
+                        dependencia_resuelta = True
+                        if p.proceso_dependencia:
+                            proceso_dependencia = self.procesos.get(p.proceso_dependencia)
+                            if proceso_dependencia and proceso_dependencia.estado in ["Listo", "Ejecución"]:
+                                dependencia_resuelta = False  # Aún depende de un proceso activo
+                            else:
+                                # La dependencia terminó (Finalizado/Zombi) o no existe, se resuelve
+                                dependencia_resuelta = True
+                        
+                        if not hay_proceso_prioritario and dependencia_resuelta:
+                            # No hay prioridad activa y dependencia resuelta, puede desbloquearse
+                            self.planificador.desbloquear_proceso(p)
+                            if p.proceso_dependencia:
+                                self._log(f"PID {p.pid}: Bloqueado → Listo (dependencia PID {p.proceso_dependencia} resuelta)")
+                            else:
+                                self._log(f"PID {p.pid}: Bloqueado → Listo ({p.tiempo_bloqueo} ticks, sin dependencia)")
+                        elif hay_proceso_prioritario:
+                            # Hay proceso prioritario, debe esperar
+                            pid_prioritario = self.planificador.proceso_con_prioridad
+                            self._log(f"⏳ PID {p.pid}: Listo para cambiar, esperando proceso prioritario PID {pid_prioritario}")
+                        elif not dependencia_resuelta:
+                            # Dependencia aún activa, debe esperar
+                            proceso_dep = self.procesos.get(p.proceso_dependencia)
+                            estado_dep = proceso_dep.estado if proceso_dep else "INEXISTENTE"
+                            self._log(f"🔗 PID {p.pid}: Esperando dependencia PID {p.proceso_dependencia} [{estado_dep}]")
 
-        # 4) Refrescar vista
+        # 2) Los zombis permanecen para siempre - NO se recolectan automáticamente
+        # Solo pueden ser eliminados manualmente con el botón "Kill Zombi"
+        for p in self.procesos.values():
+            if p.estado == "Zombi":
+                p.tiempo_estado += 1  # Solo incrementar contador, no hacer nada más
+
+        # 3) Incrementar tiempo de procesos Finalizados (para auto-eliminación)
+        for p in self.procesos.values():
+            if p.estado == "Finalizado":
+                p.tiempo_estado += 1
+
+        # 4) Revisar PIDs especiales finalizados para conversión automática a zombi (4 segundos)
+        tiempo_actual = time.time()
+        pids_a_convertir_zombi = []
+        
+        # Debug: mostrar PIDs pendientes y sus tiempos
+        if self.finalizados_pendientes_zombi:
+            self._log(f"⏰ Revisando PIDs pendientes para zombi:")
+            for pid, tiempo_finalizacion in self.finalizados_pendientes_zombi.items():
+                tiempo_transcurrido = tiempo_actual - tiempo_finalizacion
+                self._log(f"   PID {pid}: {tiempo_transcurrido:.1f}s transcurridos (necesita 4s)")
+        
+        for pid, tiempo_finalizacion in list(self.finalizados_pendientes_zombi.items()):
+            tiempo_transcurrido = tiempo_actual - tiempo_finalizacion
+            if tiempo_transcurrido >= 4:  # 4 segundos
+                pids_a_convertir_zombi.append(pid)
+                self._log(f"✅ PID {pid} listo para conversión a zombi ({tiempo_transcurrido:.1f}s >= 4s)")
+        
+        # Convertir PIDs especiales a zombi automáticamente
+        for pid in pids_a_convertir_zombi:
+            if pid in self.procesos:
+                p = self.procesos[pid]
+                if p.estado == "Finalizado":
+                    p.estado = "Zombi"
+                    p.tiempo_estado = 0
+                    p.linger_zombi = generar_linger_zombi_variado()
+                    self._log(f"PID {pid}: Finalizado → Zombi (conversión automática)")
+                del self.finalizados_pendientes_zombi[pid]
+        
+        # 5) Eliminar procesos finalizados después de 80 segundos (SOLO procesos normales)
+        pids_a_eliminar = []
+        for p in self.procesos.values():
+            if p.estado == "Finalizado" and p.tiempo_finalizado > 0:
+                tiempo_transcurrido = tiempo_actual - p.tiempo_finalizado
+                if tiempo_transcurrido >= 80:
+                    if p.pid not in self.pids_especiales:
+                        # Proceso normal: eliminar después de 80 segundos
+                        pids_a_eliminar.append(p.pid)
+                    # PID especial encontrado después de 80 segundos - verificar si ya se convirtió
+                    elif p.estado == "Finalizado":
+                        # PID especial aún en Finalizado: protegido, esperando conversión a zombi
+                        self._log(f"🛡️ PID {p.pid} protegido (PID especial en Finalizado, esperando conversión a zombi)")
+        
+        # Eliminar SOLO los procesos normales (no PIDs especiales)
+        for pid in pids_a_eliminar:
+            if pid in self.procesos:
+                proceso_eliminado = self.procesos[pid]
+                del self.procesos[pid]
+                self._log(f"PID {pid} ({proceso_eliminado.nombre}) eliminado automáticamente tras 80 segundos (proceso normal).")
+        
+        # Actualizar proporción de PIDs especiales después de eliminar procesos
+        if pids_a_eliminar:
+            self._actualizar_pids_especiales()
+
+        # 6) Refrescar vista
         self._refrescar_tree()
 
         # Programar siguiente tick
@@ -468,7 +833,7 @@ class TaskManagerApp(tk.Tk):
             pid_str = str(p.pid)
             if pid_str in por_pid:
                 iid = por_pid[pid_str]
-                for col, val in zip(("PID", "Nombre", "Estado", "Tiempo", "Auto"), row):
+                for col, val in zip(("PID", "Nombre", "Estado", "Tiempo", "Duración"), row):
                     self.tree.set(iid, col, val)
                 # actualizar tag de color según estado
                 self.tree.item(iid, tags=(p.estado,))
