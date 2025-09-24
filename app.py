@@ -156,6 +156,10 @@ class Proceso:
     tiempo_finalizado: float = 0     # timestamp cuando pasó a Finalizado (para auto-eliminación)
     padre: Optional[int] = None
     automatizado: bool = True
+    # Recursos del sistema
+    cpu_percent: float = 0.0         # Porcentaje de CPU (0-100%)
+    memoria_mb: float = 0.0          # Memoria en MB
+    disco_percent: float = 0.0       # Porcentaje de disco (0-100%)
 
     def to_row(self) -> List[str]:
         duracion_str = f"{self.duracion_ejecucion}" if self.duracion_ejecucion > 0 else "Auto"
@@ -171,6 +175,9 @@ class Proceso:
             self.estado,
             str(self.tiempo_estado),
             duracion_str,
+            f"{self.cpu_percent:.1f}%",
+            f"{self.memoria_mb:.0f} MB",
+            f"{self.disco_percent:.1f}%",
         ]
 
 class Planificador:
@@ -293,6 +300,11 @@ class TaskManagerApp(tk.Tk):
         # Contador persistente de procesos finalizados (no se reinicia al eliminar)
         self.total_finalizados_historico = 0
 
+        # Límites de recursos del sistema
+        self.cpu_total_disponible = 100.0      # 100% CPU total
+        self.memoria_total_disponible = 8192.0  # 8 GB de RAM total
+        self.disco_total_disponible = 100.0    # 100% disco total
+
         # Variables para creación automática de procesos
         self.auto_process_counter = 0
         self.max_auto_processes = 3
@@ -327,12 +339,18 @@ class TaskManagerApp(tk.Tk):
         title = ttk.Label(left, text="Procesos", font=("Segoe UI", 12, "bold"))
         title.grid(row=0, column=0, sticky="w")
 
-        columns = ("PID", "Nombre", "Estado", "Tiempo", "Duración")
+        columns = ("PID", "Nombre", "Estado", "Tiempo", "Duración", "CPU", "Memoria", "Disco")
         self.tree = ttk.Treeview(left, columns=columns, show="headings", height=18)
         for col in columns:
             self.tree.heading(col, text=col)
             if col == "Duración":
                 self.tree.heading(col, text="Duración Ejec.")
+            elif col == "CPU":
+                self.tree.heading(col, text="CPU")
+            elif col == "Memoria":
+                self.tree.heading(col, text="Memoria")
+            elif col == "Disco":
+                self.tree.heading(col, text="Disco")
             self.tree.column(col, anchor=tk.CENTER)
         self.tree.grid(row=1, column=0, sticky="nsew")
 
@@ -347,6 +365,11 @@ class TaskManagerApp(tk.Tk):
         # Resumen/estado
         self.lbl_stats = ttk.Label(left, text="Resumen: 0 procesos")
         self.lbl_stats.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        
+        # Recursos del sistema
+        self.lbl_recursos = ttk.Label(left, text="Recursos del Sistema: CPU: 0% | RAM: 0 MB/8192 MB | Disco: 0%", 
+                                     foreground="blue")
+        self.lbl_recursos.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # Panel derecho - Controles
         right = ttk.Frame(self)
@@ -381,14 +404,6 @@ class TaskManagerApp(tk.Tk):
         btn_crear5 = ttk.Button(grp_crea, text="Crear 5", command=lambda: self._crear_varios(5))
         btn_crear5.grid(row=1, column=1, padx=4, pady=4)
 
-        # Guía rápida
-        help_txt = (
-            "Guía: Si el 'Progreso automático' está activo, los procesos avanzan: \n"
-            "Nuevo → Listo (espera base) → Ejecución (tarda varios ticks) → Finalizado.\n"
-            "Puedes crear procesos y manipularlos manualmente en 'Acciones'."
-        )
-        ttk.Label(grp_crea, text=help_txt, wraplength=320, foreground="#555").grid(row=4, column=0, columnspan=2, padx=4, pady=(6, 4), sticky="w")
-
         # Acciones manuales
         grp_acc = ttk.LabelFrame(right, text="Acciones manuales")
         grp_acc.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -401,12 +416,12 @@ class TaskManagerApp(tk.Tk):
         r = 0
         c = 0
         for estado, color in ESTADO_COLOR.items():
-            swatch = tk.Canvas(grp_leg, width=16, height=16, highlightthickness=1, highlightbackground="#888")
-            swatch.create_rectangle(0, 0, 16, 16, fill=color, outline="")
-            ttk.Label(grp_leg, text=estado).grid(row=r, column=c*2+1, padx=(4, 10), pady=4, sticky="w")
-            swatch.grid(row=r, column=c*2, padx=(6, 4), pady=4, sticky="w")
+            swatch = tk.Canvas(grp_leg, width=12, height=12, highlightthickness=1, highlightbackground="#888")
+            swatch.create_rectangle(0, 0, 12, 12, fill=color, outline="")
+            swatch.grid(row=r, column=c*2, padx=(4, 2), pady=2, sticky="w")
+            ttk.Label(grp_leg, text=estado, font=("Segoe UI", 8)).grid(row=r, column=c*2+1, padx=(2, 8), pady=2, sticky="w")
             c += 1
-            if c >= 3:
+            if c >= 2:  # Solo 2 columnas en lugar de 3
                 c = 0
                 r += 1
 
@@ -503,6 +518,74 @@ class TaskManagerApp(tk.Tk):
         self._log(f"📊 PIDs especiales actuales: {self.pids_especiales}")
         self._log(f"📊 Pendientes para zombi: {list(self.finalizados_pendientes_zombi.keys())}")
 
+    def _distribuir_recursos_sistema(self):
+        """Distribuye recursos aleatoriamente entre procesos pero respetando límites del sistema"""
+        # Primero, asignar recursos base según estado
+        for proceso in self.procesos.values():
+            if proceso.estado == "Nuevo":
+                proceso.cpu_percent = 0.0
+                proceso.memoria_mb = 5.0  # Estructuras base
+                proceso.disco_percent = 0.0
+                
+            elif proceso.estado == "Listo":
+                proceso.cpu_percent = 0.0  # No ejecuta aún
+                proceso.memoria_mb = random.uniform(10.0, 50.0)  # Memoria reservada
+                proceso.disco_percent = 0.0
+                
+            elif proceso.estado == "Ejecución":
+                # ASIGNAR CPU DIRECTAMENTE AQUÍ
+                cpu_asignada = random.uniform(15.0, 45.0)
+                proceso.cpu_percent = cpu_asignada
+                proceso.memoria_mb = random.uniform(50.0, 200.0)  # Memoria para ejecución
+                # Disco (40% probabilidad de usar)
+                if random.random() < 0.4:
+                    proceso.disco_percent = random.uniform(5.0, 25.0)
+                else:
+                    proceso.disco_percent = 0.0
+                
+            elif proceso.estado == "Bloqueado":
+                proceso.cpu_percent = 0.0  # No ejecuta
+                # Mantiene la memoria que tenía (no la cambio aquí)
+                if proceso.memoria_mb == 0:  # Si es la primera vez
+                    proceso.memoria_mb = random.uniform(30.0, 100.0)
+                proceso.disco_percent = 0.0  # Esperando evento externo
+                
+            elif proceso.estado == "Finalizado":
+                proceso.cpu_percent = 0.0
+                proceso.memoria_mb = 0.0  # Se libera
+                proceso.disco_percent = 0.0
+                
+            elif proceso.estado == "Zombi":
+                proceso.cpu_percent = 0.0  # NUNCA consume CPU
+                proceso.memoria_mb = 1.0   # Solo entrada en tabla de procesos
+                proceso.disco_percent = 0.0
+        
+        # Normalizar CPU para que no exceda 100% total
+        procesos_ejecutando = [p for p in self.procesos.values() if p.estado == "Ejecución"]
+        if procesos_ejecutando:
+            cpu_total = sum(p.cpu_percent for p in procesos_ejecutando)
+            if cpu_total > 100.0:
+                factor_cpu = 100.0 / cpu_total
+                for proceso in procesos_ejecutando:
+                    proceso.cpu_percent *= factor_cpu
+            
+            # Normalizar disco si excede 100%
+            disco_total = sum(p.disco_percent for p in procesos_ejecutando if p.disco_percent > 0)
+            if disco_total > 100.0:
+                factor_disco = 100.0 / disco_total
+                for proceso in procesos_ejecutando:
+                    if proceso.disco_percent > 0:
+                        proceso.disco_percent *= factor_disco
+        
+        # Verificar límite de memoria total
+        memoria_total = sum(p.memoria_mb for p in self.procesos.values())
+        if memoria_total > self.memoria_total_disponible:
+            # Escalar proporcionalmente
+            factor = self.memoria_total_disponible / memoria_total
+            for proceso in self.procesos.values():
+                if proceso.memoria_mb > 0:
+                    proceso.memoria_mb *= factor
+
     # ---------- Acciones ----------
     def _crear_proceso(self, nombre: Optional[str] = None, automatizado: Optional[bool] = None):
         # Si se proporciona un nombre específico (como "System"), usarlo
@@ -524,6 +607,12 @@ class TaskManagerApp(tk.Tk):
         p.tiempo_admision = generar_tiempo_admision_variado()      # Siempre 3 ticks
         p.tiempo_espera_cpu = generar_tiempo_espera_cpu()          # 4, 7, 9 ticks para espera CPU
         p.tiempo_bloqueo = generar_tiempo_bloqueo()                # 3-5 ticks para bloqueo
+        
+        # Inicializar recursos básicos según estado inicial
+        if p.estado == "Nuevo":
+            p.cpu_percent = 0.0
+            p.memoria_mb = 5.0
+            p.disco_percent = 0.0
         
         self.procesos[pid] = p
         
@@ -939,6 +1028,9 @@ class TaskManagerApp(tk.Tk):
         if pids_a_eliminar:
             self._actualizar_pids_especiales()
 
+        # 5.5) Actualizar y distribuir recursos del sistema respetando límites
+        self._distribuir_recursos_sistema()
+
         # 6) Refrescar vista
         self._refrescar_tree()
 
@@ -960,7 +1052,9 @@ class TaskManagerApp(tk.Tk):
             pid_str = str(p.pid)
             if pid_str in por_pid:
                 iid = por_pid[pid_str]
-                for col, val in zip(("PID", "Nombre", "Estado", "Tiempo", "Duración"), row):
+                # Actualizar TODAS las columnas incluyendo CPU, Memoria, Disco
+                columnas = ("PID", "Nombre", "Estado", "Tiempo", "Duración", "CPU", "Memoria", "Disco")
+                for col, val in zip(columnas, row):
                     self.tree.set(iid, col, val)
                 # actualizar tag de color según estado
                 self.tree.item(iid, tags=(p.estado,))
@@ -993,6 +1087,16 @@ class TaskManagerApp(tk.Tk):
         
         resumen = " | ".join(resumen_partes)
         self.lbl_stats.configure(text=f"Total: {total} procesos | Visibles: {total_visibles} | {resumen}")
+        
+        # Actualizar recursos totales del sistema
+        cpu_total = sum(p.cpu_percent for p in self.procesos.values())
+        memoria_total = sum(p.memoria_mb for p in self.procesos.values())
+        disco_total = sum(p.disco_percent for p in self.procesos.values())
+        
+        recursos_text = (f"Recursos del Sistema: CPU: {cpu_total:.1f}% | "
+                        f"RAM: {memoria_total:.0f} MB/{self.memoria_total_disponible:.0f} MB | "
+                        f"Disco: {disco_total:.1f}%")
+        self.lbl_recursos.configure(text=recursos_text)
 
     def _refrescar_ui(self):
         # botón start/stop
