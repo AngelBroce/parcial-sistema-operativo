@@ -6,8 +6,71 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
 # ===============================
+# Ventana de Auditoría
+# ===============================
+
+class VentanaAuditoria(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Auditoría del Sistema - Log de Eventos")
+        self.geometry("600x400")
+        self.minsize(500, 300)
+        
+        # Configurar ventana
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        
+        # Área de texto para el log
+        frame_log = ttk.LabelFrame(self, text="Registro de Eventos del Sistema")
+        frame_log.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        frame_log.rowconfigure(0, weight=1)
+        frame_log.columnconfigure(0, weight=1)
+        
+        self.txt_log = tk.Text(frame_log, state="disabled", wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(frame_log, orient="vertical", command=self.txt_log.yview)
+        self.txt_log.configure(yscrollcommand=scrollbar.set)
+        
+        self.txt_log.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        scrollbar.grid(row=0, column=1, sticky="ns", pady=4)
+        
+        # Botón para limpiar log
+        btn_frame = ttk.Frame(self)
+        btn_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        
+        ttk.Button(btn_frame, text="Limpiar Log", command=self.limpiar_log).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Cerrar", command=self.withdraw).pack(side=tk.RIGHT, padx=4)
+        
+        # Inicialmente oculta
+        self.withdraw()
+        
+        # Protocolo de cierre - solo ocultar, no destruir
+        self.protocol("WM_DELETE_WINDOW", self.withdraw)
+    
+    def log_mensaje(self, msg: str):
+        """Agregar mensaje al log de auditoría"""
+        self.txt_log.configure(state="normal")
+        self.txt_log.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        self.txt_log.see("end")
+        self.txt_log.configure(state="disabled")
+    
+    def limpiar_log(self):
+        """Limpiar el contenido del log"""
+        self.txt_log.configure(state="normal")
+        self.txt_log.delete(1.0, tk.END)
+        self.txt_log.configure(state="disabled")
+    
+    def mostrar(self):
+        """Mostrar la ventana de auditoría"""
+        self.deiconify()
+        self.lift()
+
+# ===============================
 # Modelo de Procesos y Estados
 # ===============================
+
+
+# Tiempo
 
 def generar_duracion_ejecucion_variada() -> int:
     """
@@ -217,7 +280,7 @@ class TaskManagerApp(tk.Tk):
         self.planificador = Planificador()
 
         # Configuración de reloj automático
-        self.tick_ms = 3000  # ms por tick (3 segundos - lento para observar cambios)
+        self.tick_ms = 1500  # ms por tick (1.5 segundos - más rápido para mejor dinamismo)
         self.cpu_corriendo = False  # NO iniciar automáticamente - esperar comando del usuario
 
         # Sistema completamente automático (sin opciones de configuración)
@@ -227,8 +290,19 @@ class TaskManagerApp(tk.Tk):
         self.pids_especiales = []  # Guardaremos 3 PIDs aleatorios aquí
         self.finalizados_pendientes_zombi = {}  # PID -> tiempo_finalizacion para conversión a zombi
 
+        # Variables para creación automática de procesos
+        self.auto_process_counter = 0
+        self.max_auto_processes = 3
+        self.auto_process_timer = 0
+        self.auto_process_interval = random.randint(5, 6)  # 5-6 ticks
+        self.procesos_automaticos = set()  # PIDs de procesos creados automáticamente
+
         # Construcción UI
         self._build_ui()
+        
+        # Crear ventana de auditoría
+        self.ventana_auditoria = VentanaAuditoria(self)
+        
         self._log("Simulador de Sistema Operativo iniciado automáticamente.")
 
         # Inicio automático del sistema
@@ -335,19 +409,21 @@ class TaskManagerApp(tk.Tk):
                 c = 0
                 r += 1
 
-        # Log
-        grp_log = ttk.LabelFrame(right, text="Eventos")
-        grp_log.grid(row=4, column=0, sticky="nsew")
-        right.rowconfigure(4, weight=1)
-        self.txt_log = tk.Text(grp_log, height=8, state="disabled")
-        self.txt_log.pack(fill="both", expand=True)
+        # Auditoría
+        grp_auditoria = ttk.LabelFrame(right, text="Auditoría")
+        grp_auditoria.grid(row=4, column=0, sticky="ew")
+        
+        btn_auditoria = ttk.Button(grp_auditoria, text="📋 Abrir Log de Eventos", command=self._abrir_auditoria)
+        btn_auditoria.pack(padx=8, pady=8)
 
     # ---------- Utilidades ----------
+    def _abrir_auditoria(self):
+        """Abrir la ventana de auditoría"""
+        self.ventana_auditoria.mostrar()
+    
     def _log(self, msg: str):
-        self.txt_log.configure(state="normal")
-        self.txt_log.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-        self.txt_log.see("end")
-        self.txt_log.configure(state="disabled")
+        """Registrar mensaje en la ventana de auditoría"""
+        self.ventana_auditoria.log_mensaje(msg)
 
     def _selected_pids(self) -> List[int]:
         sel = []
@@ -412,7 +488,7 @@ class TaskManagerApp(tk.Tk):
             self.finalizados_pendientes_zombi[proceso.pid] = time.time()
             self._log(f"⭐ PID {proceso.pid} es ESPECIAL - programado para zombi en 4 segundos")
         else:
-            self._log(f"📋 PID {proceso.pid} es NORMAL - será eliminado en 80 segundos")
+            self._log(f"📋 PID {proceso.pid} es NORMAL - será eliminado en 3 ticks")
         
         msg = f"PID {proceso.pid} finalizado"
         if razon:
@@ -555,7 +631,17 @@ class TaskManagerApp(tk.Tk):
         # Eliminar el zombi más antiguo (menor PID)
         zombi_mas_antiguo = min(zombis, key=lambda x: x.pid)
         pid_eliminado = zombi_mas_antiguo.pid
+        
+        # Verificar si era un proceso automático antes de eliminarlo
+        era_automatico = pid_eliminado in self.procesos_automaticos
+        
         del self.procesos[pid_eliminado]
+        
+        # Si era automático, decrementar contador y remover de la lista
+        if era_automatico:
+            self.procesos_automaticos.remove(pid_eliminado)
+            self.auto_process_counter -= 1
+            self._log(f"🤖 Proceso automático PID {pid_eliminado} eliminado. Contador: {self.auto_process_counter}/{self.max_auto_processes}")
         
         # Remover de PIDs especiales si estaba ahí
         if pid_eliminado in self.pids_especiales:
@@ -602,6 +688,23 @@ class TaskManagerApp(tk.Tk):
             if len(self.pids_especiales) < zombis_objetivo:
                 self._log(f"⚠️ Faltan PIDs especiales ({len(self.pids_especiales)}/{zombis_objetivo}), actualizando...")
                 self._actualizar_pids_especiales()
+
+        # 0.1) Creación automática de procesos cada 5-6 ticks (máximo 3)
+        self.auto_process_timer += 1
+        if (self.auto_process_counter < self.max_auto_processes and 
+            self.auto_process_timer >= self.auto_process_interval):
+            # Crear proceso automático
+            pid_anterior = max(self.procesos.keys()) if self.procesos else 0
+            self._crear_proceso()
+            # Encontrar el nuevo PID creado y agregarlo a la lista de automáticos
+            nuevo_pid = max(self.procesos.keys())
+            if nuevo_pid != pid_anterior:
+                self.procesos_automaticos.add(nuevo_pid)
+            
+            self.auto_process_counter += 1
+            self.auto_process_timer = 0
+            self.auto_process_interval = random.randint(5, 6)  # Nuevo intervalo aleatorio
+            self._log(f"🤖 Proceso automático creado ({self.auto_process_counter}/{self.max_auto_processes}) - PID {nuevo_pid}")
 
         # 1) Cambios automáticos de estado
         if self.auto_progress.get():
@@ -790,26 +893,39 @@ class TaskManagerApp(tk.Tk):
                     self._log(f"PID {pid}: Finalizado → Zombi (conversión automática)")
                 del self.finalizados_pendientes_zombi[pid]
         
-        # 5) Eliminar procesos finalizados después de 80 segundos (SOLO procesos normales)
+        # 5) Eliminar procesos finalizados después de 3 ticks (procesos normales) o conversión a zombi (PIDs especiales)
         pids_a_eliminar = []
         for p in self.procesos.values():
-            if p.estado == "Finalizado" and p.tiempo_finalizado > 0:
-                tiempo_transcurrido = tiempo_actual - p.tiempo_finalizado
-                if tiempo_transcurrido >= 80:
-                    if p.pid not in self.pids_especiales:
-                        # Proceso normal: eliminar después de 80 segundos
+            if p.estado == "Finalizado":
+                if p.pid not in self.pids_especiales:
+                    # Proceso normal: eliminar después de 3 ticks
+                    if p.tiempo_estado >= 3:
                         pids_a_eliminar.append(p.pid)
-                    # PID especial encontrado después de 80 segundos - verificar si ya se convirtió
-                    elif p.estado == "Finalizado":
-                        # PID especial aún en Finalizado: protegido, esperando conversión a zombi
-                        self._log(f"🛡️ PID {p.pid} protegido (PID especial en Finalizado, esperando conversión a zombi)")
+                else:
+                    # PID especial: usar tiempo real para conversión a zombi (4 segundos)
+                    if p.tiempo_finalizado > 0:
+                        tiempo_transcurrido = tiempo_actual - p.tiempo_finalizado
+                        if tiempo_transcurrido >= 80:
+                            # PID especial encontrado después de 80 segundos - verificar si ya se convirtió
+                            self._log(f"🛡️ PID {p.pid} protegido (PID especial en Finalizado, esperando conversión a zombi)")
         
         # Eliminar SOLO los procesos normales (no PIDs especiales)
         for pid in pids_a_eliminar:
             if pid in self.procesos:
                 proceso_eliminado = self.procesos[pid]
+                
+                # Verificar si era un proceso automático antes de eliminarlo
+                era_automatico = pid in self.procesos_automaticos
+                
                 del self.procesos[pid]
-                self._log(f"PID {pid} ({proceso_eliminado.nombre}) eliminado automáticamente tras 80 segundos (proceso normal).")
+                
+                # Si era automático, decrementar contador y remover de la lista
+                if era_automatico:
+                    self.procesos_automaticos.remove(pid)
+                    self.auto_process_counter -= 1
+                    self._log(f"🤖 Proceso automático PID {pid} eliminado. Contador: {self.auto_process_counter}/{self.max_auto_processes}")
+                
+                self._log(f"PID {pid} ({proceso_eliminado.nombre}) eliminado automáticamente tras 3 ticks (proceso normal).")
         
         # Actualizar proporción de PIDs especiales después de eliminar procesos
         if pids_a_eliminar:
@@ -823,12 +939,15 @@ class TaskManagerApp(tk.Tk):
 
     # ---------- Refresco de Treeview ----------
     def _refrescar_tree(self):
-        # Sync items
+        # Sync items - solo mostrar procesos que no estén en estado "Nuevo"
         existentes = set(self.tree.get_children())
         por_pid = {self.tree.set(i, "PID"): i for i in existentes}
 
-        # actualizar/insertar
-        for p in self.procesos.values():
+        # Filtrar procesos: mostrar solo desde "Listo" en adelante
+        procesos_visibles = [p for p in self.procesos.values() if p.estado != "Nuevo"]
+
+        # actualizar/insertar solo procesos visibles
+        for p in procesos_visibles:
             row = p.to_row()
             pid_str = str(p.pid)
             if pid_str in por_pid:
@@ -841,19 +960,23 @@ class TaskManagerApp(tk.Tk):
                 iid = self.tree.insert("", "end", values=row, tags=(p.estado,))
                 por_pid[pid_str] = iid
 
-        # eliminar los que ya no existen
-        actuales_pids = {str(p.pid) for p in self.procesos.values()}
-        for pid_str, iid in por_pid.items():
-            if pid_str not in actuales_pids:
+        # eliminar los que ya no existen o están en estado "Nuevo"
+        pids_visibles = {str(p.pid) for p in procesos_visibles}
+        for pid_str, iid in list(por_pid.items()):
+            if pid_str not in pids_visibles:
                 self.tree.delete(iid)
+                del por_pid[pid_str]
 
         # actualizar resumen
         total = len(self.procesos)
+        total_visibles = len(procesos_visibles)
         por_estado: Dict[str, int] = {e: 0 for e in ESTADOS}
         for p in self.procesos.values():
             por_estado[p.estado] = por_estado.get(p.estado, 0) + 1
+        
+        # Mostrar estadísticas completas pero indicar procesos visibles
         resumen = " | ".join([f"{e}: {por_estado.get(e, 0)}" for e in ESTADOS])
-        self.lbl_stats.configure(text=f"Resumen: {total} proceso(s) | {resumen}")
+        self.lbl_stats.configure(text=f"Total: {total} procesos | Visibles: {total_visibles} | {resumen}")
 
     def _refrescar_ui(self):
         # botón start/stop
